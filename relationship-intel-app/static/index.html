@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Relationship Intelligence Model</title>
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; font-family: 'Inter', sans-serif; background: #0f172a; color: #fff;}
+        #mynetwork { width: 100%; height: 100vh; }
+        .header { position: absolute; top: 20px; left: 20px; z-index: 10; background: rgba(30, 41, 59, 0.8); padding: 15px 25px; border-radius: 12px; backdrop-filter: blur(10px); border: 1px solid #334155; }
+        h2 { margin: 0 0 5px 0; font-size: 20px; color: #f8fafc; }
+        p { margin: 0; font-size: 14px; color: #cbd5e1; }
+        #edge-info, #node-info { position: absolute; z-index: 10; background: rgba(30, 41, 59, 0.9); padding: 15px 25px; border-radius: 12px; backdrop-filter: blur(10px); border: 1px solid #334155; display: none; }
+        #node-info { top: 20px; right: 20px; min-width: 200px; }
+        #edge-info { bottom: 20px; right: 20px; min-width: 200px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h2>Cluster Discovery</h2>
+        <p>Auto-detected grouped by Louvain naturally.</p>
+    </div>
+    <div id="node-info"></div>
+    <div id="edge-info"></div>
+    <div id="mynetwork"></div>
+
+    <script type="text/javascript">
+        fetch('/graph')
+            .then(res => res.json())
+            .then(data => {
+                var colors = ["#ef4444", "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#6366f1", "#ec4899", "#14b8a6", "#f43f5e"];
+                
+                var nodes = data.nodes.map(n => ({
+                    id: n.id,
+                    label: n.label || n.id,
+                    employee_name: n.name || n.id,
+                    department: n.department || "Unknown",
+                    role: n.role || "Unknown",
+                    cluster_id: n.cluster_id,
+                    color: colors[n.cluster_id % colors.length],
+                    shape: 'dot',
+                    size: 15,
+                    font: { color: '#f8fafc', size: 12, face: 'Inter' }
+                }));
+
+                var edges = data.edges.map(e => ({
+                    from: e.from,
+                    to: e.to,
+                    value: e.value,
+                    outOfHours: e.outOfHours || 0,
+                    title: "Messages: " + e.value,
+                    color: { color: '#334155', highlight: '#cbd5e1' }
+                }));
+
+                var container = document.getElementById('mynetwork');
+                var graphData = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
+                
+                var options = {
+                    physics: {
+                        forceAtlas2Based: { gravitationalConstant: -50, centralGravity: 0.01, springLength: 100, springConstant: 0.08 },
+                        solver: 'forceAtlas2Based',
+                        timestep: 0.35,
+                        stabilization: { iterations: 150 }
+                    },
+                    interaction: { hover: true }
+                };
+
+                var network = new vis.Network(container, graphData, options);
+
+                network.on("selectNode", function (params) {
+                    if (params.nodes.length > 0) {
+                        var nodeId = params.nodes[0];
+                        var node = graphData.nodes.get(nodeId);
+                        var connectedEdges = network.getConnectedEdges(nodeId); // Total relationships
+                        
+                        var infoDiv = document.getElementById('node-info');
+                        infoDiv.style.display = 'block';
+                        infoDiv.innerHTML = `<strong>${node.employee_name}</strong><br>` +
+                                          `<span style="color: #94a3b8; font-size: 13px;">${node.role} - ${node.department}</span><br><br>` + 
+                                          `<strong>Cluster ID:</strong> ${node.cluster_id}<br>` + 
+                                          `<strong>Total Connections:</strong> ${connectedEdges.length}`;
+                        document.getElementById('edge-info').style.display = 'none';
+                    }
+                });
+
+                network.on("selectEdge", function (params) {
+                    // Only show edge info if no nodes are explicitly selected
+                    if (params.edges.length > 0 && params.nodes.length === 0) {
+                        var edgeId = params.edges[0];
+                        var edge = graphData.edges.get(edgeId);
+                        
+                        var fromNode = graphData.nodes.get(edge.from);
+                        var toNode = graphData.nodes.get(edge.to);
+                        var dirText = `${fromNode.employee_name} &nbsp;➔&nbsp; ${toNode.employee_name}`;
+                        
+                        var ooh_pct = edge.value > 0 ? ((edge.outOfHours / edge.value) * 100).toFixed(1) : 0;
+                        var strength = edge.value > 50 ? "<span style='color: #ef4444'>CRITICAL</span>" : (edge.value > 20 ? "<span style='color: #f59e0b'>HIGH</span>" : "LOW");
+
+                        var infoDiv = document.getElementById('edge-info');
+                        infoDiv.style.display = 'block';
+                        infoDiv.innerHTML = `<strong>Relationship Details</strong><br>` +
+                                            `<span style="color: #94a3b8; font-size: 13px;">Strength: ${strength}</span><br><br>` +
+                                            `<div style="color: #38bdf8; font-size: 15px; margin-bottom: 10px; font-weight: 500;">${dirText}</div>` +
+                                            `<strong>Total Messages:</strong> ${edge.value}<br>` +
+                                            `<strong>Out of Office Time:</strong> <span style="color: ${ooh_pct > 30 ? '#ef4444' : '#f8fafc'}">${ooh_pct}%</span>`;
+                    }
+                });
+                
+                network.on("deselectNode", function() {
+                    document.getElementById('node-info').style.display = 'none';
+                });
+
+                network.on("deselectEdge", function() {
+                    document.getElementById('edge-info').style.display = 'none';
+                });
+            });
+    </script>
+</body>
+</html>
