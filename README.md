@@ -2,7 +2,7 @@
 
 End-to-end graph data pipeline designed to ingest internal corporate communications, run complex algorithmic analytics (like Louvain clustering), and surface suspicious cross-department interaction metrics or insider threats instantly.
 
-![Visual Relationship Clusters](cluster_demo.png)
+![Visual Relationship Clusters](assets/image.png)
 
 ## Getting Started: End-to-End Demo
 
