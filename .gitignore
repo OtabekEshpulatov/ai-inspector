@@ -1,0 +1,18 @@
+# Python Virtual Environments
+venv/
+env/
+.env
+
+# Pytest and Cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# OS Files
+.DS_Store
+
+# Docker and Logs
+*.log
+
+# Generated Data (Optional: remove if you want to push your JSON files)
+# event-data-generator/data/*.json
