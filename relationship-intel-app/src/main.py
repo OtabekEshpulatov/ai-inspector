@@ -1,13 +1,13 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
-import json
+import pandas as pd
+import io
 import os
 from contextlib import asynccontextmanager
 from .database import db
-from .ingestion import ingest_events
+from .ingestion import ingest_xlsx
 from .algorithms import run_clustering
-import json
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -23,12 +23,20 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.post("/ingest")
 async def ingest_file(file: UploadFile = File(...)):
-    content = await file.read()
     try:
-        events = json.loads(content)
-        processed = ingest_events(events)
+        content = await file.read()
+        # Read Excel file
+        df = pd.read_excel(io.BytesIO(content))
+        processed = ingest_xlsx(df)
+        
+        # Trigger clustering to group employees with similar destination patterns
         run_clustering()
-        return {"status": "success", "processed": processed, "total_events": len(events)}
+        
+        return {
+            "status": "success", 
+            "processed": processed, 
+            "total_rows": len(df)
+        }
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -41,43 +49,48 @@ def get_graph():
     edges = []
     
     with db.driver.session() as session:
-        nodes_result = session.run("MATCH (n:Employee) RETURN n.id AS id, n.cluster_id AS cluster")
-        for record in nodes_result:
-            # We'll try to find metadata in data/employees.json if it exists to add name and dept
+        # Fetch Employees
+        emp_result = session.run("""
+            MATCH (e:Employee)
+            OPTIONAL MATCH (e)-[:BELONGS_TO]->(g:Group)
+            RETURN e.name AS name, g.name AS group, e.cluster_id AS cluster
+        """)
+        for record in emp_result:
             nodes.append({
-                "id": record["id"],
+                "id": record["name"],
+                "label": record["name"],
+                "group": record["group"] or "Unknown",
                 "cluster_id": record["cluster"] or 0,
-                "label": record["id"] # fallback
+                "type": "Employee"
             })
             
+        # Fetch Destinations
+        dest_result = session.run("MATCH (d:Destination) RETURN d.name AS name")
+        for record in dest_result:
+            nodes.append({
+                "id": record["name"],
+                "label": record["name"][:30] + "..." if len(record["name"]) > 30 else record["name"],
+                "full_name": record["name"],
+                "type": "Destination"
+            })
+            
+        # Fetch Relationships
         edges_result = session.run("""
-        MATCH (s:Employee)-[r:DAILY_ACTIVITY]->(t:Employee)
-        RETURN s.id AS source, t.id AS target, sum(r.count) AS weight, sum(r.out_of_hours_count) AS out_of_hours
+            MATCH (s:Employee)-[r:TRANSFERRED_TO]->(t:Destination)
+            RETURN s.name AS source, t.name AS target, r.weight AS weight, 
+                   r.channel AS channel, r.severity AS severity, r.action AS action
         """)
         for record in edges_result:
             edges.append({
                 "from": record["source"],
                 "to": record["target"],
                 "value": record["weight"],
-                "outOfHours": record["out_of_hours"] or 0,
-                "title": f"Messages: {record['weight']}" # Tooltip on hover/click using vis.js natively
+                "channel": record["channel"],
+                "severity": record["severity"],
+                "action": record["action"],
+                "title": f"Risk Score: {record['weight']} | Channel: {record['channel']} | Action: {record['action']}"
             })
             
-    # Merge employee metadata for names and departments natively if available
-    try:
-        with open("../event-data-generator/data/employees.json", "r") as f:
-            emps = json.load(f)
-            emap = {e["employee_id"]: e for e in emps}
-            for n in nodes:
-                if n["id"] in emap:
-                    emp = emap[n["id"]]
-                    n["label"] = f"{emp['name']} ({emp['department']})"
-                    n["name"] = emp["name"]
-                    n["department"] = emp["department"]
-                    n["role"] = emp.get("role", "Unknown")
-    except Exception as e:
-        print(f"No employee metadata found locally. Using IDs only. {e}")
-        
     return {"nodes": nodes, "edges": edges}
 
 @app.get("/")

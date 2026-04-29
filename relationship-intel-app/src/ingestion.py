@@ -1,52 +1,56 @@
 from .database import db
 from datetime import datetime
+import pandas as pd
 
-def check_idempotency(event_id: str) -> bool:
-    if not db.redis_client:
-        return False
-    if db.redis_client.exists(event_id):
-        return True
-    
-    # Set with 30 day expiration (2592000 seconds)
-    db.redis_client.set(event_id, "1", ex=2592000)
-    return False
-
-def ingest_events(events: list):
+def ingest_xlsx(df: pd.DataFrame):
     processed = 0
-    skipped = 0
-
     if not db.driver:
         print("Neo4j database not connected. Skipping DB insertion.")
         return 0
 
-    with db.driver.session() as session:
-        for ev in events:
-            event_id = ev.get("event_id")
-            if check_idempotency(event_id):
-                skipped += 1
-                continue
-            
-            sender = ev.get("sender")
-            receiver = ev.get("receiver")
-            dt_str = ev.get("timestamp")
-            
-            # Parse datetime: '2026-04-16T09:00:00'
-            try:
-                dt = datetime.fromisoformat(dt_str)
-                date_str = dt.date().isoformat()
-                hour = dt.hour
-                is_out_of_hours = 1 if (hour < 9 or hour >= 18) else 0
-            except:
-                continue
+    # Replace NaN values with empty strings to prevent "nan" nodes
+    df = df.fillna('')
 
+    with db.driver.session() as session:
+        for _, row in df.iterrows():
+            # Extract and sanitize fields
+            employee = str(row.get('Employee', '')).strip()
+            group = str(row.get('Group', 'Unknown')).strip()
+            destination = str(row.get('Destination', '')).strip()
+            channel = str(row.get('Channel', 'Unknown')).strip()
+            severity = str(row.get('Severity', 'Low')).strip()
+            action = str(row.get('Action', 'Warned')).strip()
+            
+            if not employee or not destination:
+                continue
+                
+            # Penalty logic: Blocked actions add much more weight/risk
+            penalty = 5 if action == 'Blocked' else 1
+            
             query = """
-            MERGE (s:Employee {id: $sender})
-            MERGE (r:Employee {id: $receiver})
-            MERGE (s)-[rel:DAILY_ACTIVITY {date: $date_str}]->(r)
-            ON CREATE SET rel.count = 1, rel.out_of_hours_count = $out_of_hours
-            ON MATCH SET rel.count = rel.count + 1, rel.out_of_hours_count = rel.out_of_hours_count + $out_of_hours
+            MERGE (e:Employee {name: $employee})
+            MERGE (g:Group {name: $group})
+            MERGE (d:Destination {name: $destination})
+            MERGE (e)-[:BELONGS_TO]->(g)
+            MERGE (e)-[r:TRANSFERRED_TO]->(d)
+            ON CREATE SET 
+                r.weight = $penalty, 
+                r.channel = $channel, 
+                r.severity = $severity, 
+                r.action = $action,
+                r.last_updated = datetime()
+            ON MATCH SET 
+                r.weight = r.weight + $penalty,
+                r.last_updated = datetime()
             """
-            session.run(query, sender=sender, receiver=receiver, date_str=date_str, out_of_hours=is_out_of_hours)
+            session.run(query, 
+                        employee=employee, 
+                        group=group, 
+                        destination=destination, 
+                        channel=channel, 
+                        severity=severity, 
+                        action=action, 
+                        penalty=penalty)
             processed += 1
             
     return processed

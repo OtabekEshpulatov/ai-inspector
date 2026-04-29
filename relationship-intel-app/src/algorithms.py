@@ -10,15 +10,17 @@ def run_clustering():
     G = nx.Graph()
     
     with db.driver.session() as session:
-        # Fetch all relationships mapping sender -> receiver to compute an aggregate weight graph
+        # We cluster employees based on their shared destination interactions.
+        # If two employees send data to the same destination, they are linked in the projection.
         query = """
-        MATCH (s:Employee)-[rel:DAILY_ACTIVITY]->(r:Employee)
-        RETURN s.id AS sender, r.id AS receiver, SUM(rel.count) AS total_count
+        MATCH (e1:Employee)-[r1:TRANSFERRED_TO]->(d:Destination)<-[r2:TRANSFERRED_TO]-(e2:Employee)
+        WHERE e1.name < e2.name
+        RETURN e1.name AS e1, e2.name AS e2, SUM(r1.weight + r2.weight) AS shared_risk
         """
         results = session.run(query)
         
         for record in results:
-            u, v, w = record["sender"], record["receiver"], record["total_count"]
+            u, v, w = record["e1"], record["e2"], record["shared_risk"]
             if G.has_edge(u, v):
                 G[u][v]["weight"] += w
             else:
@@ -34,8 +36,8 @@ def run_clustering():
     with db.driver.session() as session:
         for node_id, cluster_id in partition.items():
             session.run("""
-            MATCH (e:Employee {id: $id})
+            MATCH (e:Employee {name: $name})
             SET e.cluster_id = $cluster
-            """, id=node_id, cluster=cluster_id)
+            """, name=node_id, cluster=cluster_id)
             
     print(f"Clustered {len(partition)} employees into {len(set(partition.values()))} clusters.")
